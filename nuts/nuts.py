@@ -95,6 +95,7 @@ def leapfrog(theta, r, grad, epsilon, f):
     # make new step in theta
     thetaprime = theta + epsilon * rprime
     #compute new gradient
+    print(thetaprime)
     logpprime, gradprime = f(thetaprime)
     # make half step in r again
     rprime = rprime + 0.5 * epsilon * gradprime
@@ -129,6 +130,7 @@ def find_reasonable_epsilon(theta0, grad0, logp0, f):
         _, rprime, _, logpprime = leapfrog(theta0, r0, grad0, epsilon, f)
         # acceptprob = np.exp(logpprime - logp0 - 0.5 * ( np.dot(rprime, rprime.T) - np.dot(r0, r0.T)))
         logacceptprob = logpprime-logp0-0.5*(np.dot(rprime, rprime)-np.dot(r0,r0))
+        print(epsilon)
 
     print("find_reasonable_epsilon=", epsilon)
 
@@ -202,7 +204,7 @@ def build_tree(theta, r, grad, logu, v, j, epsilon, f, joint0):
     return thetaminus, rminus, gradminus, thetaplus, rplus, gradplus, thetaprime, gradprime, logpprime, nprime, sprime, alphaprime, nalphaprime
 
 
-def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False):
+def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False, epsilon = 0.1):
     """
     Implements the No-U-Turn Sampler (NUTS) algorithm 6 from from the NUTS
     paper (Hoffman & Gelman, 2011).
@@ -255,14 +257,15 @@ def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False):
     D = len(theta0)
     samples = np.empty((M + Madapt, D), dtype=float)
     lnprob = np.empty(M + Madapt, dtype=float)
-
+    print(epsilon)
     logp, grad = f(theta0)
     samples[0, :] = theta0
     lnprob[0] = logp
-
+    print(epsilon)
     # Choose a reasonable first epsilon by a simple heuristic.
-    epsilon = find_reasonable_epsilon(theta0, grad, logp, f)
-
+    if epsilon is None:
+        epsilon = find_reasonable_epsilon(theta0, grad, logp, f)
+    print(epsilon)
     # Parameters to the dual averaging algorithm.
     gamma = 0.05
     t0 = 10
@@ -315,6 +318,7 @@ def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False):
             _tmp = min(1, float(nprime) / float(n))
             if (sprime == 1) and (np.random.uniform() < _tmp):
                 samples[m, :] = thetaprime[:]
+                print(thetaprime)
                 lnprob[m] = logpprime
                 logp = logpprime
                 grad = gradprime[:]

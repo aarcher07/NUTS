@@ -56,10 +56,12 @@ Carlo", Matthew D. Hoffman & Andrew Gelman
 import numpy as np
 from numpy import log, exp, sqrt
 from .helpers import progress_range
+from scipy.stats import multivariate_normal
+from scipy.optimize import newton
 
 __all__ = ['nuts6']
 
-def leapfrog(theta, r, grad, epsilon, f):
+def leapfrog(theta, r, grad, epsilon, mass, f):
     """ Perfom a leapfrog jump in the Hamiltonian space
     INPUTS
     ------
@@ -92,44 +94,91 @@ def leapfrog(theta, r, grad, epsilon, f):
     """
     # make half step in r
     rprime = r + 0.5 * epsilon * grad
+    print("grad_0 = " + str(grad))
+
+    print("r_1/2 = " + str(rprime))
     # make new step in theta
-    thetaprime = theta + epsilon * rprime
+    thetaprime = theta + epsilon * np.linalg.solve(mass,rprime)
     #compute new gradient
-    print(thetaprime)
     logpprime, gradprime = f(thetaprime)
     # make half step in r again
     rprime = rprime + 0.5 * epsilon * gradprime
+    print("logp_new = " + str(logpprime))
+    print("theta_new = " + str(thetaprime))
+
     return thetaprime, rprime, gradprime, logpprime
 
+def implicit_midpoint(theta, r, grad, epsilon, mass, f):
+    """ Perfom a leapfrog jump in the Hamiltonian space
+    INPUTS
+    ------
+    theta: ndarray[float, ndim=1]
+        initial parameter position
 
-def find_reasonable_epsilon(theta0, grad0, logp0, f):
+    r: ndarray[float, ndim=1]
+        initial momentum
+
+    grad: float
+        initial gradient value
+
+    epsilon: float
+        step size
+
+    f: callable
+        it should return the log probability and gradient evaluated at theta
+        logp, grad = f(theta)
+
+    OUTPUTS
+    -------
+    thetaprime: ndarray[float, ndim=1]
+        new parameter position
+    rprime: ndarray[float, ndim=1]
+        new momentum
+    gradprime: float
+        new gradient
+    logpprime: float
+        new lnp
+    """
+    # make half step in r
+    def implict_fun(rprime):
+        _, gradprime = f(theta + (epsilon/4)*np.linalg.solve(mass,rprime + r))
+        return rprime - r + epsilon * gradprime
+    rprime = newton(implict_fun,r + normal(0,1,len(r)),maxiter=5)
+    # make new step in theta
+    thetaprime = theta + epsilon * np.linalg.solve(mass,(rprime + r)/2)
+    #compute new gradient
+    print("logp_new = " + str(rprime))
+    print("theta_new = " + str(thetaprime))
+
+    return thetaprime, rprime, _, logpprime
+def find_reasonable_epsilon(theta0, grad0, logp0, mass, f):
     """ Heuristic for choosing an initial value of epsilon """
-    epsilon = 1.
-    r0 = np.random.normal(0., 1., len(theta0))
+    epsilon = 1
+    r0 = multivariate_normal.rvs(mean=np.zeros(len(theta0)), cov=mass,size=1)
 
     # Figure out what direction we should be moving epsilon.
-    _, rprime, gradprime, logpprime = leapfrog(theta0, r0, grad0, epsilon, f)
+    _, rprime, gradprime, logpprime = leapfrog(theta0, r0, grad0, epsilon, mass, f)
     # brutal! This trick make sure the step is not huge leading to infinite
     # values of the likelihood. This could also help to make sure theta stays
     # within the prior domain (if any)
     k = 1.
     while np.isinf(logpprime) or np.isinf(gradprime).any():
         k *= 0.5
-        _, rprime, _, logpprime = leapfrog(theta0, r0, grad0, epsilon * k, f)
+        _, rprime, _, logpprime = leapfrog(theta0, r0, grad0, epsilon * k, mass, f)
 
     epsilon = 0.5 * k * epsilon
 
     # acceptprob = np.exp(logpprime - logp0 - 0.5 * (np.dot(rprime, rprime.T) - np.dot(r0, r0.T)))
     # a = 2. * float((acceptprob > 0.5)) - 1.
-    logacceptprob = logpprime-logp0-0.5*(np.dot(rprime, rprime)-np.dot(r0,r0))
+    logacceptprob = logpprime-logp0 #-0.5*(np.dot(rprime, rprime)-np.dot(r0,r0))
     a = 1. if logacceptprob > np.log(0.5) else -1.
     # Keep moving epsilon in that direction until acceptprob crosses 0.5.
     # while ( (acceptprob ** a) > (2. ** (-a))):
     while a * logacceptprob > -a * np.log(2):
         epsilon = epsilon * (2. ** a)
-        _, rprime, _, logpprime = leapfrog(theta0, r0, grad0, epsilon, f)
+        _, rprime, _, logpprime = leapfrog(theta0, r0, grad0, epsilon, mass, f)
         # acceptprob = np.exp(logpprime - logp0 - 0.5 * ( np.dot(rprime, rprime.T) - np.dot(r0, r0.T)))
-        logacceptprob = logpprime-logp0-0.5*(np.dot(rprime, rprime)-np.dot(r0,r0))
+        logacceptprob = logpprime-logp0#-0.5*(np.dot(rprime, rprime)-np.dot(r0,r0))
         print(epsilon)
 
     print("find_reasonable_epsilon=", epsilon)
@@ -154,19 +203,22 @@ def stop_criterion(thetaminus, thetaplus, rminus, rplus):
         return if the condition is valid
     """
     dtheta = thetaplus - thetaminus
+    print("turning condition 1: " + str(np.dot(dtheta, rminus.T) >= 0))
+    print("turning condition 1: " + str(np.dot(dtheta, rplus.T) >= 0))
     return (np.dot(dtheta, rminus.T) >= 0) & (np.dot(dtheta, rplus.T) >= 0)
 
 
-def build_tree(theta, r, grad, logu, v, j, epsilon, f, joint0):
+def build_tree(theta, r, grad, logu, v, j, epsilon, mass, f, joint0):
     """The main recursion."""
     if (j == 0):
         # Base case: Take a single leapfrog step in the direction v.
-        thetaprime, rprime, gradprime, logpprime = leapfrog(theta, r, grad, v * epsilon, f)
+        thetaprime, rprime, gradprime, logpprime = leapfrog(theta, r, grad, v * epsilon, mass, f)
         joint = logpprime - 0.5 * np.dot(rprime, rprime.T)
         # Is the new point in the slice?
         nprime = int(logu < joint)
         # Is the simulation wildly inaccurate?
         sprime = int((logu - 1000.) < joint)
+        print("leaf accuracy: " + str(sprime))
         # Set the return values---minus=plus for all things here, since the
         # "tree" is of depth 0.
         thetaminus = thetaprime[:]
@@ -181,13 +233,14 @@ def build_tree(theta, r, grad, logu, v, j, epsilon, f, joint0):
         nalphaprime = 1
     else:
         # Recursion: Implicitly build the height j-1 left and right subtrees.
-        thetaminus, rminus, gradminus, thetaplus, rplus, gradplus, thetaprime, gradprime, logpprime, nprime, sprime, alphaprime, nalphaprime = build_tree(theta, r, grad, logu, v, j - 1, epsilon, f, joint0)
+        thetaminus, rminus, gradminus, thetaplus, rplus, gradplus, thetaprime, gradprime, logpprime, nprime, sprime, alphaprime, nalphaprime = build_tree(theta, r, grad, logu, v, j - 1, epsilon,mass,  f, joint0)
         # No need to keep going if the stopping criteria were met in the first subtree.
+
         if (sprime == 1):
             if (v == -1):
-                thetaminus, rminus, gradminus, _, _, _, thetaprime2, gradprime2, logpprime2, nprime2, sprime2, alphaprime2, nalphaprime2 = build_tree(thetaminus, rminus, gradminus, logu, v, j - 1, epsilon, f, joint0)
+                thetaminus, rminus, gradminus, _, _, _, thetaprime2, gradprime2, logpprime2, nprime2, sprime2, alphaprime2, nalphaprime2 = build_tree(thetaminus, rminus, gradminus, logu, v, j - 1, epsilon, mass, f, joint0)
             else:
-                _, _, _, thetaplus, rplus, gradplus, thetaprime2, gradprime2, logpprime2, nprime2, sprime2, alphaprime2, nalphaprime2 = build_tree(thetaplus, rplus, gradplus, logu, v, j - 1, epsilon, f, joint0)
+                _, _, _, thetaplus, rplus, gradplus, thetaprime2, gradprime2, logpprime2, nprime2, sprime2, alphaprime2, nalphaprime2 = build_tree(thetaplus, rplus, gradplus, logu, v, j - 1, epsilon, mass, f, joint0)
             # Choose which subtree to propagate a sample up from.
             if (np.random.uniform() < (float(nprime2) / max(float(int(nprime) + int(nprime2)), 1.))):
                 thetaprime = thetaprime2[:]
@@ -204,7 +257,7 @@ def build_tree(theta, r, grad, logu, v, j, epsilon, f, joint0):
     return thetaminus, rminus, gradminus, thetaplus, rplus, gradplus, thetaprime, gradprime, logpprime, nprime, sprime, alphaprime, nalphaprime
 
 
-def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False, epsilon = 0.1):
+def nuts6(f, M, Madapt, theta0, mass, delta=0.6, progress=False, epsilon = None):
     """
     Implements the No-U-Turn Sampler (NUTS) algorithm 6 from from the NUTS
     paper (Hoffman & Gelman, 2011).
@@ -255,16 +308,18 @@ def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False, epsilon = 0.1):
         raise ValueError('theta0 is expected to be a 1-D array')
 
     D = len(theta0)
+    print(theta0)
     samples = np.empty((M + Madapt, D), dtype=float)
     lnprob = np.empty(M + Madapt, dtype=float)
-    print(epsilon)
     logp, grad = f(theta0)
+    print("grad_0 = " + str(grad))
+
     samples[0, :] = theta0
     lnprob[0] = logp
-    print(epsilon)
     # Choose a reasonable first epsilon by a simple heuristic.
-    if epsilon is None:
-        epsilon = find_reasonable_epsilon(theta0, grad, logp, f)
+    # if epsilon is None:
+    #     epsilon = find_reasonable_epsilon(theta0, grad, logp, mass, f)
+    epsilon = 0.1/np.max(np.abs(np.linalg.solve(mass,grad)))
     print(epsilon)
     # Parameters to the dual averaging algorithm.
     gamma = 0.05
@@ -278,7 +333,7 @@ def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False, epsilon = 0.1):
 
     for m in progress_range(1, M + Madapt, progress=progress):
         # Resample momenta.
-        r0 = np.random.normal(0, 1, D)
+        r0 = multivariate_normal.rvs(mean=np.zeros(D), cov=mass, size=1)
 
         #joint lnp of theta and momentum r
         joint = logp - 0.5 * np.dot(r0, r0.T)
@@ -309,16 +364,15 @@ def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False, epsilon = 0.1):
 
             # Double the size of the tree.
             if (v == -1):
-                thetaminus, rminus, gradminus, _, _, _, thetaprime, gradprime, logpprime, nprime, sprime, alpha, nalpha = build_tree(thetaminus, rminus, gradminus, logu, v, j, epsilon, f, joint)
+                thetaminus, rminus, gradminus, _, _, _, thetaprime, gradprime, logpprime, nprime, sprime, alpha, nalpha = build_tree(thetaminus, rminus, gradminus, logu, v, j, epsilon, mass, f,joint)
             else:
-                _, _, _, thetaplus, rplus, gradplus, thetaprime, gradprime, logpprime, nprime, sprime, alpha, nalpha = build_tree(thetaplus, rplus, gradplus, logu, v, j, epsilon, f, joint)
+                _, _, _, thetaplus, rplus, gradplus, thetaprime, gradprime, logpprime, nprime, sprime, alpha, nalpha = build_tree(thetaplus, rplus, gradplus, logu, v, j, epsilon, mass, f, joint)
 
             # Use Metropolis-Hastings to decide whether or not to move to a
             # point from the half-tree we just generated.
             _tmp = min(1, float(nprime) / float(n))
             if (sprime == 1) and (np.random.uniform() < _tmp):
                 samples[m, :] = thetaprime[:]
-                print(thetaprime)
                 lnprob[m] = logpprime
                 logp = logpprime
                 grad = gradprime[:]
@@ -338,6 +392,7 @@ def nuts6(f, M, Madapt, theta0, delta=0.6, progress=False, epsilon = 0.1):
             epsilonbar = exp((1. - eta) * log(epsilonbar) + eta * log(epsilon))
         else:
             epsilon = epsilonbar
+        print(epsilon)
     samples = samples[Madapt:, :]
     lnprob = lnprob[Madapt:]
     return samples, lnprob, epsilon
@@ -397,7 +452,7 @@ def test_nuts6():
         import matplotlib.pyplot as plt
     except ImportError:
         import pylab as plt
-    temp = np.random.multivariate_normal(mean, cov, size=500)
+    temp = np.random.multivariate_normal.rvs(mean, cov, size=500)
     plt.subplot(1,3,1)
     plt.plot(temp[:, 0], temp[:, 1], '.')
     plt.plot(samples[:, 0], samples[:, 1], 'r+')

@@ -81,8 +81,7 @@ class NUTSSampler:
 
     def sample(self, pos0, M, Madapt, delta=0.6, progress=False, **kwargs):
         """ Runs NUTS6 """
-        samples, lnprob, epsilon = nuts6(
-            self._sample_fn, M, Madapt, pos0, delta, progress=progress)
+        samples, lnprob, epsilon = nuts6(self._sample_fn, M, Madapt, pos0, delta, progress=progress)
         self._chain = samples
         self._lnprob = lnprob
         self._epsilon = epsilon

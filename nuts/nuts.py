@@ -95,14 +95,13 @@ def leapfrog(theta, r, grad, hess, epsilon, f):
     # make half step in r
     rprime = r + 0.5 * epsilon * grad
     # make new step in theta
+    # print(np.linalg.solve(hess,rprime))
     thetaprime = theta + epsilon * np.linalg.solve(hess,rprime)
     #compute new gradient
     logpprime, gradprime, hessprime = f(thetaprime)
     # make half step in r again
     rprime = rprime + 0.5 * epsilon * gradprime
-    # print("logp_new = " + str(logpprime))
-    #print("theta_new = " + str(thetaprime))
-
+    # print(logpprime)
     return thetaprime, rprime, gradprime, hessprime, logpprime
 
 def find_reasonable_epsilon(theta0, grad0, hess0, logp0, f):
@@ -118,7 +117,7 @@ def find_reasonable_epsilon(theta0, grad0, hess0, logp0, f):
     k = 1.
     while np.isinf(logpprime) or np.isinf(gradprime).any():
         k *= 0.5
-        _, rprime, _, _, logpprime = leapfrog(theta0, r0, grad0, hess0, epsilon * k, f)
+        _, rprime, gradprime, _, logpprime = leapfrog(theta0, r0, grad0, hess0, epsilon * k, f)
 
     epsilon = 0.5 * k * epsilon
 
@@ -133,7 +132,7 @@ def find_reasonable_epsilon(theta0, grad0, hess0, logp0, f):
         _, rprime, _, _, logpprime = leapfrog(theta0, r0, grad0, hess0, epsilon, f)
         # acceptprob = np.exp(logpprime - logp0 - 0.5 * ( np.dot(rprime, rprime.T) - np.dot(r0, r0.T)))
         logacceptprob = logpprime-logp0#-0.5*(np.dot(rprime, rprime)-np.dot(r0,r0))
-        #print(epsilon)
+        print(epsilon)
 
     #print("find_reasonable_epsilon=", epsilon)
 
@@ -160,7 +159,7 @@ def stop_criterion(thetaminus, thetaplus, rminus, rplus, gradminus, gradplus, he
     dtheta = thetaplus - thetaminus
     #print("turning condition 1: " + str(np.dot(dtheta, rminus.T) >= 0))
     #print("turning condition 1: " + str(np.dot(dtheta, rplus.T) >= 0))
-    return (np.dot(dtheta, np.matmul(hessminus,rminus).T) >= 0) & (np.dot(dtheta, np.matmul(hessplus,rplus).T) >= 0)
+    return (np.dot(dtheta, np.linalg.solve(hessminus,rminus).T) >= 0) & (np.dot(dtheta, np.linalg.solve(hessplus,rplus).T) >= 0)
 
 
 def build_tree(theta, r, grad, hess, logu, v, j, epsilon, f, joint0):
@@ -168,13 +167,13 @@ def build_tree(theta, r, grad, hess, logu, v, j, epsilon, f, joint0):
     if (j == 0):
         # Base case: Take a single leapfrog step in the direction v.
         thetaprime, rprime, gradprime, hessprime, logpprime = leapfrog(theta, r, grad, hess, v * epsilon, f)
-
-        joint = logpprime - 0.5 * np.dot(rprime,np.matmul(hess, rprime))
+        (sign, logdet) = np.linalg.slogdet(hess)
+        joint = logpprime - 0.5 * np.dot(rprime,np.linalg.solve(hess, rprime))  - 0.5*logdet
         # Is the new point in the slice?
         nprime = int(logu < joint)
         # Is the simulation wildly inaccurate?
         sprime = int((logu - 1000.) < joint)
-        #print("leaf accuracy: " + str(sprime))
+        # print("leaf accuracy: " + str(sprime))
         # Set the return values---minus=plus for all things here, since the
         # "tree" is of depth 0.
         thetaminus = thetaprime[:]
@@ -288,14 +287,15 @@ def nuts6(f, M, Madapt, theta0, epsilon=None, delta=0.6, progress=False):
     # Initialize dual averaging algorithm.
     epsilonbar = 1
     Hbar = 0
-
+    ave_acc_rate = 0
     for m in progress_range(1, M + Madapt, progress=progress):
         # Resample momenta.
 
         r0 = multivariate_normal.rvs(mean=np.zeros(D), cov=hess, size=1)
 
         #joint lnp of theta and momentum r
-        joint = logp - np.dot(r0,np.matmul(hess, r0))
+        (sign, logdet) = np.linalg.slogdet(hess)
+        joint = logp - 0.5*np.dot(r0,np.linalg.solve(hess, r0))  - 0.5*logdet
 
         # Resample u ~ uniform([0, exp(joint)]).
         # Equivalent to (log(u) - joint) ~ exponential(1).
@@ -351,6 +351,8 @@ def nuts6(f, M, Madapt, theta0, epsilon=None, delta=0.6, progress=False):
             j += 1
 
         # Do adaptation of epsilon if we're still doing burn-in.
+        acc_rate = alpha / float(nalpha)
+        ave_acc_rate = (m-1)*ave_acc_rate/m + acc_rate/m
         eta = 1. / float(m + t0)
         Hbar = (1. - eta) * Hbar + eta * (delta - alpha / float(nalpha))
         if (m <= Madapt):
@@ -359,9 +361,10 @@ def nuts6(f, M, Madapt, theta0, epsilon=None, delta=0.6, progress=False):
             epsilonbar = exp((1. - eta) * log(epsilonbar) + eta * log(epsilon))
         else:
             epsilon = epsilonbar
+        # print(epsilon)
     samples = samples[Madapt:, :]
     lnprob = lnprob[Madapt:]
-    return samples, lnprob, epsilon
+    return samples, lnprob, epsilon, ave_acc_rate
 
 
 def test_nuts6():
@@ -387,9 +390,9 @@ def test_nuts6():
         # add the counter to count how many times this function is called
         c.c += 1
 
-        grad = -np.dot(theta, A)
-        logp = 0.5 * np.dot(grad, theta.T)
-        return logp, grad
+        grad = -np.dot(theta-np.ones(len(theta)), A)
+        logp = 0.5 * np.dot(grad, (theta-np.ones(len(theta))).T)
+        return logp, grad, A
 
     D = 2
     M = 100000
@@ -402,7 +405,7 @@ def test_nuts6():
                       [1.98, 4]])
 
     print('Running HMC with dual averaging and trajectory length %0.2f...' % delta)
-    samples, lnprob, epsilon = nuts6(correlated_normal, M, Madapt, theta0, lambda theta,grad: np.eye(len(theta0)), delta)
+    samples, lnprob, epsilon = nuts6(correlated_normal, M, Madapt, theta0, delta= delta)
     print('Done. Final epsilon = %f.' % epsilon)
     print('(M+Madapt) / Functions called: %f' % ((M+Madapt)/float(c.c)))
 
